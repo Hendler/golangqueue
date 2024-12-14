@@ -13,6 +13,16 @@ services:
       - REDIS_URL=redis:6379
     networks:
       - trellis
+  consumer:
+    build:
+      context: .
+      dockerfile: docker/ConsumerDockerfile
+    depends_on:
+      - trellisredis
+    environment:
+      - REDIS_URL=redis:6379
+    networks:
+      - trellis
 
   trellisredis:
   # user for storing request ids and result status

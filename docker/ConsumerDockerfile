@@ -1,0 +1,17 @@
+FROM golang:1.21-alpine
+
+WORKDIR /app
+
+RUN mkdir consumer
+# Copy go mod and sum files
+COPY go.mod go.sum ./
+
+# Download all dependencies
+RUN go mod download
+COPY ./consumer/main.go ./consumer/main.go 
+
+# Build the consumer with a distinct name
+RUN go build -o consumer-binary ./consumer/main.go  # Use a different name than the directory
+
+# Run the binary
+CMD ["./consumer-binary"]

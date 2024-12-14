@@ -5,8 +5,11 @@ go 1.21 // or whatever version you're using
 require (
 	github.com/gofiber/fiber/v2 v2.52.5
 	github.com/google/uuid v1.6.0
+	github.com/nsqio/go-nsq v1.1.0
 	github.com/redis/go-redis/v9 v9.7.0
 )
+
+require github.com/golang/snappy v0.0.1 // indirect
 
 // generated with `go mod tidy`
 require (

@@ -1,13 +1,26 @@
 # Setup
 
-Read the [SETUP.md](SETUP.md) file for instructions on how to set up the development environment. 
+## dev environment
+
+assumes you have docker 
+
+    docker compose up -d
+
+##  benchmarks
+
+
 
 # design decisions
+
+
+
+Essentially, nsq is used to handle spikes and safety. Then a worker maintains a different Redis queue for consuming each caller's requests, to balance between them. Redis is also used to store state of processing and results. 
 
 - chose go because it's easier than rust, faster than python, better memory and concurrency model than python
 -  NSQ for the queue because it's easier to scale than redis for this usecase and easier, easier to integrate with go and easier to setup than kafka
 -  redis because it's easy to setup and easy to use
 - use string instead of int64 to let int parsing happen later
+
 
 # TODO
 
@@ -15,6 +28,17 @@ Read the [SETUP.md](SETUP.md) file for instructions on how to set up the develop
  - safer input
  - worker service that autoscales to handle nsq queue size
  - make worker service in docker
+ - balanced load for reading
+ 
+ ## benchmark
+  - generate random large numbers
+  - hit server
+  - check for response latency
+  - wait one second and ask for update until result is provided
+  - 10k concurrent requests
+  - 100k concurrent requests
+  - 1M concurrent requests
+  - ouput data, output report
 
 # UNFINISHED
 
@@ -37,12 +61,16 @@ http://localhost:8004/
 to check webserver is up and working, you can hit 
 http://localhost:5555/compute/230432
 
-# hit 
+To test input 
+
 curl -X POST http://localhost:5555/compute \
   -H "Content-Type: application/json" \
   -H "X-Caller-ID: test-caller-1" \
   -d '{"number": "100000000000000000050700000000000000004563"}'
 
+# To benchmark
+
+ 
 
 # work log
 
