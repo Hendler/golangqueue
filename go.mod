@@ -1,4 +1,4 @@
-module github.com/yourusername/trellis_take_home
+module github.com/Hendler/trellis_take_home
 
 go 1.21 // or whatever version you're using
 
