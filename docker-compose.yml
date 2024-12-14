@@ -1,0 +1,55 @@
+networks:
+  trellis:
+services:
+  
+  trellisredis:
+  # user for storing request ids and result status
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - '127.0.0.1:6381:6379/tcp'
+    command: redis-server --save 20 1 --loglevel warning
+    networks:
+      - gather
+    volumes:
+      - ./volumes/redis:/data:rw
+
+
+  # used for perfomatnly retrieving incoming requests
+  nsqlookupd:
+    image: nsqio/nsq
+    command: /nsqlookupd
+    ports:
+      - "4160:4160"
+      - "4161:4161"
+    networks:
+      - trellis
+    volumes:
+      - ./volumes/nsqlookupd:/data:rw
+
+  nsqd:
+    image: nsqio/nsq
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160
+    depends_on:
+      - nsqlookupd
+    ports:
+      - "4150-4155:4150"
+    networks:
+      - trellis
+    volumes:
+      - ./volumes/nsqd:/data:rw
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 1G
+
+  nsqadmin:
+    image: nsqio/nsq
+    command: /nsqadmin --lookupd-http-address=nsqlookupd:4161
+    depends_on:
+      - nsqlookupd
+    ports:
+      - "4171:4171"
+    networks:
+      - trellis 
