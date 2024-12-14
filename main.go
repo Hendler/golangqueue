@@ -29,13 +29,15 @@
   - `request_id` (Path or Query Parameter): The identifier for the prime factorization task.
   - **Response:** Returns the prime factors of the number submitted in the corresponding `POST` request.
 */
+
 package main
 
 import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
+
+	"math/big"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -43,7 +45,7 @@ import (
 )
 
 type ComputeRequest struct {
-	Number int64 `json:"number"`
+	Number *big.Int `json:"number"`
 }
 
 type ComputeResponse struct {
@@ -51,18 +53,15 @@ type ComputeResponse struct {
 }
 
 type ResultResponse struct {
-	Status string        `json:"status"`
-	Result map[int64]int `json:"result,omitempty"`
+	Status string         `json:"status"`
+	Result map[string]int `json:"result,omitempty"`
 }
 
 func main() {
 	app := fiber.New()
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr: "trellisredis:6379",
 	})
-
-	// Queue processor
-	go processQueue(rdb)
 
 	app.Post("/compute", func(c *fiber.Ctx) error {
 		callerID := c.Get("X-Caller-ID")
@@ -118,16 +117,16 @@ func main() {
 		// If complete, parse and return the results
 		if status == "complete" {
 			resultStr := values["result"]
-			result := make(map[int64]int)
+			result := make(map[string]int)
 
 			// Parse the stored result string into our map
 			for _, pair := range strings.Split(resultStr, "\n") {
 				if pair == "" {
 					continue
 				}
-				var prime int64
+				var prime string
 				var count int
-				fmt.Sscanf(pair, "%d:%d", &prime, &count)
+				fmt.Sscanf(pair, "%s:%d", &prime, &count)
 				result[prime] = count
 			}
 
@@ -140,34 +139,7 @@ func main() {
 		return c.Status(500).JSON(fiber.Map{"error": "Invalid request status"})
 	})
 
-	app.Listen(":3000")
-}
-
-func processQueue(rdb *redis.Client) {
-	ctx := context.Background()
-	for {
-		// Get all caller queues
-		queues, err := rdb.Keys(ctx, "caller_queue:*").Result()
-		if err != nil {
-			continue
-		}
-
-		// Process one request from each queue
-		for _, queue := range queues {
-			requestID, err := rdb.LPop(ctx, queue).Result()
-			if err != nil {
-				continue
-			}
-
-			// Process in separate goroutine
-			go processRequest(ctx, rdb, requestID)
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func processRequest(ctx context.Context, rdb *redis.Client, requestID string) {
-	// Implementation of prime factorization
-	// Store results back in Redis
+	port := ":5555"
+	fmt.Printf("Starting server on port %s\n", port)
+	app.Listen(port)
 }

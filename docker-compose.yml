@@ -1,19 +1,41 @@
 networks:
   trellis:
 services:
-  
+  app:
+    build:
+      context: .
+      dockerfile: docker/HTTPServerDockerfile
+    ports:
+      - "5555:5555"
+    depends_on:
+      - trellisredis
+    environment:
+      - REDIS_URL=redis:6379
+    networks:
+      - trellis
+
   trellisredis:
   # user for storing request ids and result status
     image: redis:7-alpine
     restart: always
     ports:
-      - '127.0.0.1:6381:6379/tcp'
+      - '6381:6379'
     command: redis-server --save 20 1 --loglevel warning
     networks:
-      - gather
+      - trellis
     volumes:
       - ./volumes/redis:/data:rw
-
+  redisinsight:
+    image: 'redislabs/redisinsight:latest'
+    ports:
+      - '8004:8001'
+    depends_on:
+      - trellisredis
+    environment:
+      - REDIS_HOST=trellisredis
+      - REDIS_PORT=6379
+    networks:
+      - trellis
 
   # used for perfomatnly retrieving incoming requests
   nsqlookupd:
@@ -27,22 +49,41 @@ services:
     volumes:
       - ./volumes/nsqlookupd:/data:rw
 
-  nsqd:
+  nsqd1:
     image: nsqio/nsq
     command: /nsqd --lookupd-tcp-address=nsqlookupd:4160
     depends_on:
       - nsqlookupd
     ports:
-      - "4150-4155:4150"
+      - "4151:4150"
     networks:
       - trellis
     volumes:
-      - ./volumes/nsqd:/data:rw
-    deploy:
-      replicas: 3
-      resources:
-        limits:
-          memory: 1G
+      - ./volumes/nsqd1:/data:rw
+
+  nsqd2:
+    image: nsqio/nsq
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160
+    depends_on:
+      - nsqlookupd
+    ports:
+      - "4152:4150"
+    networks:
+      - trellis
+    volumes:
+      - ./volumes/nsqd2:/data:rw
+
+  nsqd3:
+    image: nsqio/nsq
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160
+    depends_on:
+      - nsqlookupd
+    ports:
+      - "4153:4150"
+    networks:
+      - trellis
+    volumes:
+      - ./volumes/nsqd3:/data:rw
 
   nsqadmin:
     image: nsqio/nsq
