@@ -20,20 +20,16 @@ Essentially, nsq is used to handle spikes and safety. Then a worker maintains a 
 -  redis because it's easy to setup and easy to use for fast storage and retrieval
 - use string instead of int64 to let int parsing happen later for larger numbers
 
-The most complext part of the app is balancing the worker service among callers. I went down some rabit holes combining NSQ and redis, but in the end I found a simple solution.
-We needed both NSQ for safety and scale, but Redis for speed and ease of use of state data. Can't create a topic per caller in NSQ for performance reasons. 
+The most complext part of the app is balancing the worker service among callers since FIFO is not good enough when users have different numbers of jobs, some with massive spikes. I went down some rabit holes combining NSQ and redis, but in the end I found a simple solution.
+We needed both NSQ for safety and scale, but Redis for speed and ease of use of state data.  
 
-The definition of fairness could be autoscaled per user, or it could have limited resources per user. We assume an unknown limit and that each user is prioriotized based on the number of jobs they have in the queue. 
-The more jobs, the lower priority the new jobs are
-
+The definition of fairness could be autoscaled per user, or it could have limited resources per user. We assume an unknown limit and that each user is prioriotized based on the number of jobs they have in the queue, and simply do round robin. (I abandoned using redis sorted sets for this i'd have to build semaphores and transactions)
+ 
 ## ingestion steps
 
 1. NSQ store jobs in queue immediately, in a TOPIC#callerID format
-2. an nsq consumer processes the jobs, decides what channel to subscribe to based on Redis stats
-
-
-2. REDIS store individual job status and request data, with a score for priority, results in redis along with callerId counts
-3. the worker looks for messages in redis by priority, if it fails or times out it will requeu in nsq
+2. at the same time redis counts are incremented and a set of callerIDs is stored, indicating to each worker which channels it should 
+3. an nsq consumers are instatiated, one per callerID processes the jobs, decides what channel to subscribe to based on Redis stats
 4.  when job is done store results in redis, a new results queue, which flushes every 5 seconds to disk, and we assume that is ok for persistence for now
 
 
