@@ -196,13 +196,13 @@ func main() {
 						log.Printf("Failed to convert count to int: %v", err)
 						continue
 					}
-					if countInt > 1 {
-						available_count += countInt - 1
+					if countInt > 0 {
+						available_count += countInt
 					}
 
 					log.Printf("Caller: %s, Count: %s", callerID, count)
 
-					if countInt > 0 {
+					if available_count > 0 {
 						// Get highest scored request ID from caller's priority queue
 						results, err := rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
 						if err != nil {
@@ -234,7 +234,10 @@ func main() {
 							}
 
 							batch_count++
+							available_count--
 						}
+					} else {
+						log.Printf("Caller %s has no requests to process, available_count: %d", callerID, available_count)
 					}
 				}
 				if available_count == 0 {
