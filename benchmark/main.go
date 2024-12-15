@@ -30,6 +30,8 @@ type BenchmarkStats struct {
 	MinPOSTTime     time.Duration
 	mutex           sync.Mutex
 	postTimes       []time.Duration
+	PendingRequests []string
+	pendingMutex    sync.Mutex
 }
 
 func (stats *BenchmarkStats) addPostTime(duration time.Duration) {
@@ -59,9 +61,9 @@ func calculateAverage(durations []time.Duration) time.Duration {
 }
 
 func generateLargeNumber() string {
-	// Generate a random number between 10^50 and 10^60
-	min := new(big.Int).Exp(big.NewInt(10), big.NewInt(50), nil)
-	max := new(big.Int).Exp(big.NewInt(10), big.NewInt(60), nil)
+	// Generate a random number between 10^6 and 10^20
+	min := new(big.Int).Exp(big.NewInt(10), big.NewInt(6), nil)
+	max := new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil)
 
 	diff := new(big.Int).Sub(max, min)
 	random := new(big.Int).Rand(rand.New(rand.NewSource(time.Now().UnixNano())), diff)
@@ -123,10 +125,74 @@ func sendRequest(url string, clientID string, stats *BenchmarkStats, wg *sync.Wa
 		return
 	}
 
+	var response Response
+	if err := json.Unmarshal(body, &response); err != nil {
+		fmt.Printf("Error parsing response: %v\n", err)
+		stats.mutex.Lock()
+		stats.FailedPOSTs++
+		stats.mutex.Unlock()
+		return
+	}
+
 	stats.mutex.Lock()
 	stats.SuccessfulPOSTs++
 	stats.mutex.Unlock()
 	stats.addPostTime(duration)
+	stats.pendingMutex.Lock()
+	stats.PendingRequests = append(stats.PendingRequests, response.RequestID)
+	stats.pendingMutex.Unlock()
+}
+
+func checkAllResults(baseURL string, stats *BenchmarkStats) {
+	for {
+		all_completed := true
+		stats.pendingMutex.Lock()
+		pendingRequests := make([]string, len(stats.PendingRequests))
+		copy(pendingRequests, stats.PendingRequests)
+		stats.pendingMutex.Unlock()
+
+		for _, requestID := range pendingRequests {
+			url := fmt.Sprintf("%s/%s", baseURL, requestID)
+			resp, err := http.Get(url)
+			if err != nil {
+				fmt.Printf("Error checking result for request %s: %v\n", requestID, err)
+				all_completed = false
+				continue
+			}
+			defer resp.Body.Close()
+
+			var result map[string]interface{}
+			body, _ := io.ReadAll(resp.Body)
+			if err := json.Unmarshal(body, &result); err != nil {
+				fmt.Printf("Error parsing response for request %s: %v\n", requestID, err)
+				all_completed = false
+				continue
+			}
+
+			status, exists := result["status"]
+			if !exists {
+				if errMsg, hasError := result["error"]; hasError {
+					fmt.Printf("Error for request %s: %v\n", requestID, errMsg)
+					all_completed = false
+				}
+				continue
+			}
+
+			if status == "completed" {
+				fmt.Printf("Completed request %s: %s\n", requestID, string(body))
+			} else {
+				fmt.Printf("Pending request %s: status = %v\n", requestID, status)
+				all_completed = false
+			}
+		}
+
+		if all_completed {
+			fmt.Println("All requests have completed!")
+			break
+		}
+
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func main() {
@@ -196,4 +262,8 @@ func main() {
 	fmt.Printf("Maximum Request Time: %v\n", stats.MaxPOSTTime)
 	fmt.Printf("Minimum Request Time: %v\n", stats.MinPOSTTime)
 	fmt.Printf("Requests/second: %.2f\n", float64(stats.SuccessfulPOSTs)/duration.Seconds())
+
+	// Check computation results
+	fmt.Printf("\nChecking computation results...\n")
+	checkAllResults(*url, stats)
 }

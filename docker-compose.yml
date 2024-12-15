@@ -33,6 +33,8 @@ services:
       - REDIS_URL=trellisredis:6379
     networks:
       - trellis
+    mem_limit: 10G
+    mem_reservation: 1G
 
   trellisredis:
   # user for storing request ids and result status

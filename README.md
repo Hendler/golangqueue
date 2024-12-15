@@ -27,6 +27,8 @@ The most complext part of the app is balancing the worker service among callers 
 We needed both NSQ for safety and scale, but Redis for speed and ease of use of state data.  
 
 The definition of fairness could be autoscaled per user, or it could have limited resources per user. We assume an unknown limit and that each user is prioriotized based on the number of jobs they have in the queue, and simply do round robin. (I abandoned using redis sorted sets for this i'd have to build semaphores and transactions)
+
+The bench generates primes to factor at   a random number between 10^6 and 10^20, but the numbers used can be larger because of the gmp library.
  
 ## ingestion steps
 

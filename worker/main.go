@@ -7,7 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
+	"time"
 
 	"github.com/ncw/gmp"
 	"github.com/redis/go-redis/v9"
@@ -19,7 +22,7 @@ const NSQ_LOOKUPD_SERVER = "nsqlookupd:4161"
 const NSQ_PRIORITY_TOPIC string = "factorization_priority_topic"
 const NSQLOOKUPD_STATS_URL = "http://nsqlookupd:4161/nodes"
 
-var NUMBER_OF_WORKERS = runtime.NumCPU() * 5
+var NUMBER_OF_WORKERS = runtime.NumCPU() * 2
 
 // there is only meant to be one of these coordinators for now, mostly because of redis
 type Worker struct {
@@ -133,6 +136,9 @@ func primeFactorization(number string) []string {
 
 func NewWorker() (*Worker, error) {
 	config := nsq.NewConfig()
+	config.MaxInFlight = 5 // Limit concurrent messages
+	config.MaxRequeueDelay = time.Second * 90
+	config.DefaultRequeueDelay = time.Second * 30
 
 	consumer, err := nsq.NewConsumer(NSQ_PRIORITY_TOPIC, "channel", config)
 	if err != nil {
@@ -218,14 +224,33 @@ func NewWorker() (*Worker, error) {
 }
 
 func main() {
-	instances := make([]*Worker, NUMBER_OF_WORKERS)
-	for i := 0; i < NUMBER_OF_WORKERS; i++ {
+	// Limit number of workers
+	maxWorkers := runtime.NumCPU() * 2 // reduced from 5 to 2
+
+	instances := make([]*Worker, maxWorkers)
+	for i := 0; i < maxWorkers; i++ {
 		instance, err := NewWorker()
 		if err != nil {
 			log.Printf("Failed to create worker: %v", err)
+			continue
 		}
 		instances[i] = instance
 	}
+
+	// Add graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		log.Println("Shutting down workers...")
+		for _, worker := range instances {
+			if worker != nil && worker.Consumer != nil {
+				worker.Consumer.Stop()
+			}
+		}
+		os.Exit(0)
+	}()
 
 	select {}
 }

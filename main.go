@@ -58,8 +58,9 @@ type ComputeResponse struct {
 }
 
 type ResultResponse struct {
-	Status string         `json:"status"`
-	Result map[string]int `json:"result,omitempty"`
+	Status string `json:"status"`
+	Number string `json:"number,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 func main() {
@@ -130,9 +131,13 @@ func main() {
 
 		// Check status and return appropriate response
 		status := values["status"]
+		number := values["number"]
+		results := values["result"]
 		if status != "complete" {
 			return c.JSON(ResultResponse{
 				Status: status,
+				Number: number,
+				Result: results,
 			})
 		}
 
