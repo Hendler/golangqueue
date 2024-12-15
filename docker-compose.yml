@@ -30,7 +30,14 @@ services:
     restart: always
     ports:
       - '6381:6379'
-    command: redis-server --save 20 1 --loglevel warning
+    command: >
+      redis-server 
+      --save 20 1 
+      --appendonly yes 
+      --appendfilename "appendonly.aof"
+      --dir /data
+      --dbfilename dump.rdb
+      --loglevel warning
     networks:
       - trellis
     volumes:

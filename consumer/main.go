@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -11,185 +12,135 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Job represents a factorization job.
-type Job struct {
-	CallerID  string
-	RequestID string
+const NSQ_TOPIC_PREFIX = "factorization_topic"
+
+type Worker struct {
+	rdb       *redis.Client
+	consumers map[string]*nsq.Consumer // map of callerID to consumer
+	mu        sync.RWMutex             // to safely access the consumers map
+	config    *nsq.Config
 }
 
-// FairScheduler implements a round-robin scheduler over multiple caller queues.
-type FairScheduler struct {
-	mu          sync.Mutex
-	callerOrder []string
-	queues      map[string][]*Job
-	pos         int
-}
-
-func NewFairScheduler() *FairScheduler {
-	return &FairScheduler{
-		queues: make(map[string][]*Job),
+func NewWorker(rdb *redis.Client) *Worker {
+	return &Worker{
+		rdb:       rdb,
+		consumers: make(map[string]*nsq.Consumer),
+		config:    nsq.NewConfig(),
 	}
 }
 
-func (f *FairScheduler) AddJob(j *Job) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.queues[j.CallerID]; !ok {
-		// This is a new caller we haven't seen before.
-		f.queues[j.CallerID] = []*Job{j}
-		f.callerOrder = append(f.callerOrder, j.CallerID)
-	} else {
-		f.queues[j.CallerID] = append(f.queues[j.CallerID], j)
+// getOrCreateConsumer creates a new consumer for a callerID if it doesn't exist
+func (w *Worker) getOrCreateConsumer(callerID string) (*nsq.Consumer, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if consumer, exists := w.consumers[callerID]; exists {
+		return consumer, nil
 	}
+
+	// Create new consumer for this callerID
+	topic := fmt.Sprintf("%s#%s", NSQ_TOPIC_PREFIX, callerID)
+	consumer, err := nsq.NewConsumer(topic, "channel", w.config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create consumer for callerID %s: %v", callerID, err)
+	}
+
+	// Set the message handler
+	consumer.AddHandler(nsq.HandlerFunc(w.ProcessMessage))
+
+	// Connect to NSQ
+	err = consumer.ConnectToNSQD("localhost:4150")
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to NSQ for callerID %s: %v", callerID, err)
+	}
+
+	w.consumers[callerID] = consumer
+	return consumer, nil
 }
 
-// NextJob returns the next job in a round-robin fashion, or nil if none available.
-func (f *FairScheduler) NextJob() *Job {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+func (w *Worker) Start(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second) // Adjust the interval as needed
+	defer ticker.Stop()
 
-	if len(f.callerOrder) == 0 {
-		return nil
-	}
-
-	startPos := f.pos
 	for {
-		caller := f.callerOrder[f.pos]
-		q := f.queues[caller]
-
-		if len(q) > 0 {
-			// Pop the first job
-			job := q[0]
-			f.queues[caller] = q[1:]
-			// If that caller’s queue is now empty, remove them from the order.
-			if len(f.queues[caller]) == 0 {
-				delete(f.queues, caller)
-				f.callerOrder = append(f.callerOrder[:f.pos], f.callerOrder[f.pos+1:]...)
-				// Adjust position if needed
-				if f.pos >= len(f.callerOrder) && len(f.callerOrder) > 0 {
-					f.pos = f.pos % len(f.callerOrder)
-				}
-			} else {
-				// Move position forward
-				f.pos = (f.pos + 1) % len(f.callerOrder)
-			}
-			return job
-		} else {
-			// This caller has no jobs, remove from order
-			delete(f.queues, caller)
-			f.callerOrder = append(f.callerOrder[:f.pos], f.callerOrder[f.pos+1:]...)
-			if len(f.callerOrder) == 0 {
-				return nil
-			}
-			if f.pos >= len(f.callerOrder) {
-				f.pos = 0
-			}
-		}
-
-		// If we've looped around and found no jobs, return nil
-		if f.pos == startPos {
-			return nil
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.checkAndUpdateConsumers(ctx)
 		}
 	}
 }
 
-type MessageHandler struct {
-	scheduler *FairScheduler
+func (w *Worker) checkAndUpdateConsumers(ctx context.Context) {
+	// Get all caller IDs from Redis
+	callerIDs, err := w.rdb.SMembers(ctx, "caller_ids").Result()
+	if err != nil {
+		log.Printf("Error getting caller IDs from Redis: %v", err)
+		return
+	}
+
+	// Create consumers for new caller IDs
+	for _, callerID := range callerIDs {
+		_, err := w.getOrCreateConsumer(callerID)
+		if err != nil {
+			log.Printf("Error creating consumer for callerID %s: %v", callerID, err)
+			continue
+		}
+	}
+
+	// Optionally, clean up consumers for caller IDs that no longer exist
+	w.cleanupUnusedConsumers(callerIDs)
 }
 
-func (h *MessageHandler) HandleMessage(m *nsq.Message) error {
-	// Parse the message body. Expected format: caller_id:request_id
-	// Adjust parsing logic as per your message format.
-	body := string(m.Body)
-	var callerID, requestID string
-	fmt.Sscanf(body, "%s:%s", &callerID, &requestID)
+func (w *Worker) cleanupUnusedConsumers(activeCallerIDs []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	h.scheduler.AddJob(&Job{
-		CallerID:  callerID,
-		RequestID: requestID,
-	})
+	// Create a map for quick lookup
+	activeMap := make(map[string]bool)
+	for _, id := range activeCallerIDs {
+		activeMap[id] = true
+	}
+
+	// Stop and remove consumers that are no longer needed
+	for callerID, consumer := range w.consumers {
+		if !activeMap[callerID] {
+			consumer.Stop()
+			delete(w.consumers, callerID)
+		}
+	}
+}
+
+func (w *Worker) ProcessMessage(message *nsq.Message) error {
+	var msg struct {
+		CallerID  string `json:"caller_id"`
+		RequestID string `json:"request_id"`
+		Number    string `json:"number"`
+	}
+
+	if err := json.Unmarshal(message.Body, &msg); err != nil {
+		return err
+	}
+
+	// Process the message...
 	return nil
 }
 
 func main() {
 	ctx := context.Background()
+
+	// Initialize Redis client
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "trellisredis:6379",
+		Addr: "localhost:6379",
 	})
 
-	scheduler := NewFairScheduler()
+	// Create worker
+	worker := NewWorker(rdb)
 
-	// Create NSQ consumer
-	cfg := nsq.NewConfig()
-	consumer, err := nsq.NewConsumer("factorization_topic", "channel", cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-	consumer.AddHandler(&MessageHandler{scheduler: scheduler})
+	// Start the worker
+	go worker.Start(ctx)
 
-	// Connect to NSQ lookup or nsqd directly
-	err = consumer.ConnectToNSQLookupd("nsqlookupd:4161")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Worker pool to process jobs concurrently
-	numWorkers := 10
-	var wg sync.WaitGroup
-	wg.Add(numWorkers)
-
-	for i := 0; i < numWorkers; i++ {
-		go func(workerID int) {
-			defer wg.Done()
-			for {
-				job := scheduler.NextJob()
-				if job == nil {
-					// No jobs available, sleep a bit to prevent busy looping
-					time.Sleep(50 * time.Millisecond)
-					continue
-				}
-				// Process the job
-				processJob(ctx, rdb, job)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-}
-
-// processJob retrieves the job from Redis, factorizes the number, and stores the result.
-func processJob(ctx context.Context, rdb *redis.Client, job *Job) {
-	// Get job details from Redis
-	values, err := rdb.HGetAll(ctx, "request:"+job.RequestID).Result()
-	if err != nil || len(values) == 0 {
-		log.Printf("Error retrieving job %s: %v", job.RequestID, err)
-		return
-	}
-
-	numberStr := values["number"]
-	if numberStr == "" {
-		log.Printf("No number found for request %s", job.RequestID)
-		return
-	}
-
-	// Perform factorization (placeholder logic)
-	// In a real scenario, factor the big number. Here we just simulate.
-	// Implement a real factorization or call out to a prime factorization function.
-	result := map[string]int{
-		"2":  1,
-		"5":  2,
-		"11": 1,
-	}
-	// Format result as string for storage
-	resultStr := ""
-	for prime, count := range result {
-		resultStr += fmt.Sprintf("%s:%d\n", prime, count)
-	}
-
-	// Store results back in Redis
-	rdb.HSet(ctx, "request:"+job.RequestID,
-		"status", "complete",
-		"result", resultStr,
-	)
-	log.Printf("Completed factorization for request %s from caller %s", job.RequestID, job.CallerID)
+	// Wait forever
+	select {}
 }

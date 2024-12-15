@@ -34,18 +34,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
-
-	"math/big"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/nsqio/go-nsq"
 	"github.com/redis/go-redis/v9"
 )
 
+const NSQ_TOPIC string = "factorization_topic"
+
 type ComputeRequest struct {
-	Number *big.Int `json:"number"`
+	Number string `json:"number"`
 }
 
 type ComputeResponse struct {
@@ -62,6 +65,13 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "trellisredis:6379",
 	})
+	config := nsq.NewConfig()
+	producer, err := nsq.NewProducer("nsqd:4150", config)
+	if err != nil {
+		fmt.Printf("Failed to create NSQ producer: %v\n", err)
+		return
+	}
+	defer producer.Stop()
 
 	app.Post("/compute", func(c *fiber.Ctx) error {
 		callerID := c.Get("X-Caller-ID")
@@ -76,16 +86,67 @@ func main() {
 
 		requestID := uuid.New().String()
 
-		// Store in Redis
+		// Format message as callerID:requestID
+		message := struct {
+			CallerID  string `json:"caller_id"`
+			RequestID string `json:"request_id"`
+			Number    string `json:"number"`
+		}{
+			CallerID:  callerID,
+			RequestID: requestID,
+			Number:    req.Number,
+		}
+		messageBytes, err := json.Marshal(message)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to marshal message"})
+		}
+
+		err = producer.Publish(NSQ_TOPIC+"#"+callerID, messageBytes)
+
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to queue job"})
+		}
+
+		// store some stats in the background
 		ctx := context.Background()
-		rdb.HSet(ctx, "request:"+requestID,
+		total_count, err := rdb.Incr(ctx, "total_count").Result()
+		if err != nil {
+			err = rdb.Set(ctx, "total_count", 1, 0).Err()
+			if err != nil {
+				log.Printf("Failed to set total_count: %v", err)
+			}
+			total_count = 1
+		}
+		log.Printf("Total count: %d", total_count)
+
+		err = rdb.SAdd(ctx, "caller_ids", callerID).Err()
+		if err != nil {
+			log.Printf("Failed to add caller ID to set: %v", err)
+		}
+		// To get all request IDs:
+		//ids, err := rdb.SMembers(ctx, "request_ids").Result()
+
+		// Your existing logic
+		count, err := rdb.Incr(ctx, "caller_count:"+callerID).Result()
+		if err != nil {
+			err = rdb.Set(ctx, "caller_count:"+callerID, 1, 0).Err()
+			if err != nil {
+				log.Printf("Failed to set caller count: %v", err)
+			}
+			count = 1
+		}
+
+		// Store request data
+		err = rdb.HSet(ctx, "request:"+requestID,
 			"caller_id", callerID,
 			"status", "pending",
 			"number", req.Number,
-		)
-
-		// Add to caller's queue
-		rdb.RPush(ctx, "caller_queue:"+callerID, requestID)
+			"processed_at_count", count,
+			"results", "",
+		).Err()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to store request data for requestID: " + requestID})
+		}
 
 		return c.JSON(ComputeResponse{RequestID: requestID})
 	})
@@ -103,14 +164,14 @@ func main() {
 			return c.Status(500).JSON(fiber.Map{"error": "Internal server error"})
 		}
 		if len(values) == 0 {
-			return c.Status(404).JSON(fiber.Map{"error": "Request not found"})
+			return c.Status(404).JSON(fiber.Map{"error": "Request not found. May be pending."})
 		}
 
 		// Check status and return appropriate response
 		status := values["status"]
-		if status == "pending" {
+		if status != "complete" {
 			return c.JSON(ResultResponse{
-				Status: "pending",
+				Status: status,
 			})
 		}
 
