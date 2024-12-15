@@ -62,8 +62,8 @@ func calculateAverage(durations []time.Duration) time.Duration {
 
 func generateLargeNumber() string {
 	// Generate a random number between 10^6 and 10^20
-	min := new(big.Int).Exp(big.NewInt(10), big.NewInt(6), nil)
-	max := new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil)
+	min := new(big.Int).Exp(big.NewInt(10), big.NewInt(3), nil)
+	max := new(big.Int).Exp(big.NewInt(10), big.NewInt(40), nil)
 
 	diff := new(big.Int).Sub(max, min)
 	random := new(big.Int).Rand(rand.New(rand.NewSource(time.Now().UnixNano())), diff)
@@ -144,18 +144,26 @@ func sendRequest(url string, clientID string, stats *BenchmarkStats, wg *sync.Wa
 }
 
 func checkAllResults(baseURL string, stats *BenchmarkStats) {
+	startTime := time.Now()
+
 	for {
-		all_completed := true
+		currentDuration := time.Since(startTime)
 		stats.pendingMutex.Lock()
 		pendingRequests := make([]string, len(stats.PendingRequests))
 		copy(pendingRequests, stats.PendingRequests)
 		stats.pendingMutex.Unlock()
 
+		// Initialize counters for this iteration
+		notFoundCount := 0
+		pendingCount := 0
+		completedCount := 0
+
+		all_completed := true
 		for _, requestID := range pendingRequests {
 			url := fmt.Sprintf("%s/%s", baseURL, requestID)
 			resp, err := http.Get(url)
 			if err != nil {
-				fmt.Printf("Error checking result for request %s: %v\n", requestID, err)
+				notFoundCount++
 				all_completed = false
 				continue
 			}
@@ -164,30 +172,37 @@ func checkAllResults(baseURL string, stats *BenchmarkStats) {
 			var result map[string]interface{}
 			body, _ := io.ReadAll(resp.Body)
 			if err := json.Unmarshal(body, &result); err != nil {
-				fmt.Printf("Error parsing response for request %s: %v\n", requestID, err)
+				notFoundCount++
 				all_completed = false
 				continue
 			}
 
 			status, exists := result["status"]
 			if !exists {
-				if errMsg, hasError := result["error"]; hasError {
-					fmt.Printf("Error for request %s: %v\n", requestID, errMsg)
+				if _, hasError := result["error"]; hasError {
+					notFoundCount++
 					all_completed = false
 				}
 				continue
 			}
 
 			if status == "completed" {
-				fmt.Printf("Completed request %s: %s\n", requestID, string(body))
+				completedCount++
 			} else {
-				fmt.Printf("Pending request %s: status = %v\n", requestID, status)
+				pendingCount++
 				all_completed = false
 			}
 		}
 
+		// Print summary for this iteration
+		fmt.Printf("\nStatus Check (elapsed time: %v):\n", currentDuration)
+		fmt.Printf("- Completed: %d\n", completedCount)
+		fmt.Printf("- Pending: %d\n", pendingCount)
+		fmt.Printf("- Not Found/Failed: %d\n", notFoundCount)
+
 		if all_completed {
-			fmt.Println("All requests have completed!")
+			totalDuration := time.Since(startTime)
+			fmt.Printf("\nAll requests have completed! Total time: %v\n", totalDuration)
 			break
 		}
 

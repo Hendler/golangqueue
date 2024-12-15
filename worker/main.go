@@ -7,12 +7,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/ncw/gmp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/nsqio/go-nsq"
@@ -63,6 +64,46 @@ func (wc *Worker) GetQueueSize() int64 {
 	return 0
 }
 
+func primeFactorization(number string) []string {
+	// Create a temporary Python script
+	script := fmt.Sprintf(`
+import sympy
+number = %s
+factors = sympy.factorint(%s)
+# Convert to format matching current output
+result = []
+for prime, exp in factors.items():
+    result.extend([str(prime)] * exp)
+print(','.join(map(str, result)))
+`, number, number)
+
+	// Write script to temporary file
+	tmpfile, err := os.CreateTemp("", "factor*.py")
+	if err != nil {
+		log.Printf("Error creating temp file: %v", err)
+		return []string{number}
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.Write([]byte(script)); err != nil {
+		log.Printf("Error writing to temp file: %v", err)
+		return []string{number}
+	}
+	tmpfile.Close()
+
+	// Execute Python script
+	cmd := exec.Command("python3", tmpfile.Name())
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Error running Python script: %v", err)
+		return []string{number}
+	}
+
+	// Parse output
+	factors := strings.Split(strings.TrimSpace(string(output)), ",")
+	return factors
+}
+
 /*
 Potential Optimization: When dividing by a factor,
 you're doing the division in-place with n.Div(n, i). This is fine, but you might want to store the result in a temporary variable first to ensure
@@ -85,54 +126,54 @@ which is suitable for most numbers. For very large numbers
 	sophisticated algorithms like Pollard's rho or the quadratic sieve,
 	but for general use, this implementation is fine.
 */
-func primeFactorization(number string) []string {
-	n := new(gmp.Int)
-	n.SetString(number, 10)
+// func DEPRICATEDprimeFactorization(number string) []string {
+// 	n := new(gmp.Int)
+// 	n.SetString(number, 10)
 
-	if n.Cmp(gmp.NewInt(2)) < 0 {
-		return []string{number}
-	}
+// 	if n.Cmp(gmp.NewInt(2)) < 0 {
+// 		return []string{number}
+// 	}
 
-	var factors []string
-	two := gmp.NewInt(2)
-	zero := gmp.NewInt(0)
+// 	var factors []string
+// 	two := gmp.NewInt(2)
+// 	zero := gmp.NewInt(0)
 
-	// Handle 2 as a special case
-	for n.Mod(n, two).Cmp(zero) == 0 {
-		factors = append(factors, "2")
-		n.Div(n, two)
-	}
+// 	// Handle 2 as a special case
+// 	for n.Mod(n, two).Cmp(zero) == 0 {
+// 		factors = append(factors, "2")
+// 		n.Div(n, two)
+// 	}
 
-	// Create a GMP integer for the incrementing factor
-	i := gmp.NewInt(3)
+// 	// Create a GMP integer for the incrementing factor
+// 	i := gmp.NewInt(3)
 
-	// Create temporary variables for calculations
-	temp := new(gmp.Int)
-	// sqrt := new(gmp.Int)
+// 	// Create temporary variables for calculations
+// 	temp := new(gmp.Int)
+// 	// sqrt := new(gmp.Int)
 
-	// While i*i <= n
-	for {
-		temp.Mul(i, i)
-		if temp.Cmp(n) > 0 {
-			break
-		}
+// 	// While i*i <= n
+// 	for {
+// 		temp.Mul(i, i)
+// 		if temp.Cmp(n) > 0 {
+// 			break
+// 		}
 
-		// While n is divisible by i
-		for n.Mod(n, i).Cmp(zero) == 0 {
-			factors = append(factors, i.String())
-			n.Div(n, i)
-		}
+// 		// While n is divisible by i
+// 		for n.Mod(n, i).Cmp(zero) == 0 {
+// 			factors = append(factors, i.String())
+// 			n.Div(n, i)
+// 		}
 
-		i.Add(i, two)
-	}
+// 		i.Add(i, two)
+// 	}
 
-	// If n > 2, n is prime
-	if n.Cmp(two) > 0 {
-		factors = append(factors, n.String())
-	}
+// 	// If n > 2, n is prime
+// 	if n.Cmp(two) > 0 {
+// 		factors = append(factors, n.String())
+// 	}
 
-	return factors
-}
+// 	return factors
+// }
 
 func NewWorker() (*Worker, error) {
 	config := nsq.NewConfig()

@@ -4,14 +4,25 @@
 
 assumes you have docker and go installed
 
-    docker compose up -d
+    docker compose up --build -d
 
+# run 
+ 
 ##  benchmarks
 
      go build -o ./benchmark-run ./benchmark/main.go
      ./benchmark-run -requests 20000 -clients 10 -concurrency 50 
 
+## ISSUES
+
+ - FIXED, was using GMP, now using sympy the workers will often crash with out of memory errors data is safe.
+ - you may need to stop and start docker so that NSQ topics get created. 
  
+ ## cleanup to restart benches
+
+    docker compose down 
+    rm -rf volumes/redis/*
+    go to http://localhost:4171/nodes to empty queues (and consuming channels)
 
 
 # design decisions
