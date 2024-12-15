@@ -54,6 +54,7 @@ services:
       - trellis
     volumes:
       - ./volumes/redis:/data:rw
+ 
   redisinsight:
     image: 'redislabs/redisinsight:latest'
     ports:

@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/nsqio/go-nsq v1.1.0
 	github.com/redis/go-redis/v9 v9.7.0
+	github.com/ncw/gmp v1.0.4
 )
 
 require github.com/golang/snappy v0.0.1 // indirect

@@ -43,6 +43,12 @@ func NewWorkerCoordinator() (*WorkerCoordinator, error) {
 		return nil, fmt.Errorf("could not create NSQ producer: %w", err)
 	}
 
+	// Create the priority topic if it doesn't exist
+	err = producer.Publish(NSQ_PRIORITY_TOPIC, []byte("init"))
+	if err != nil {
+		log.Printf("Failed to create priority topic: %v", err)
+	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_URL"),
 	})
@@ -220,7 +226,7 @@ func main() {
 					available_count += countInt
 				}
 
-				log.Printf("Caller: %s, Count: %s", callerID, count)
+				// log.Printf("Caller: %s, Count: %s", callerID, count)
 
 				if available_count > 0 {
 					// Get highest scored request ID from caller's priority queue

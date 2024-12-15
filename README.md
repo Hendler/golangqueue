@@ -2,13 +2,16 @@
 
 ## dev environment
 
-assumes you have docker 
+assumes you have docker and go installed
 
     docker compose up -d
 
 ##  benchmarks
 
-- basic 
+     go build -o ./benchmark-run ./benchmark/main.go
+     ./benchmark-run -requests 20000 -clients 10 -concurrency 50 
+
+ 
 
 
 # design decisions
@@ -35,12 +38,13 @@ The definition of fairness could be autoscaled per user, or it could have limite
 
 
 # TODO
- - make worker service in docker
- - parse large string to big number
- - fix nested logic that's broken
-
  
- ## benchmark
+ - parse large string to big number format for prime factorization library
+ - do actual prime factorization
+ - send results to client
+
+ ## client
+ 
   - generate random large numbers
   - hit server
   - check for response latency
