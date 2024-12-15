@@ -14,7 +14,7 @@ assumes you have docker and go installed
      ./benchmark-run -requests 20000 -clients 10 -concurrency 50 
 
 
- example bench output
+ example bench output. Note that it first is queueing the work, then monitoring progress for every client.
 
     Benchmark Results:
     Total Duration: 9.879257427s
@@ -120,9 +120,8 @@ The bench generates primes to factor at   a random number between 10^6 and 10^20
 - don't requeue broken requests, place in different queue
 
 ## Production
-- if staying with NSQ, there are limitations to channel counts - 100k or so because of partitioning
-- observality across services with prometheus and grafana
-- use dynamodb for its speed and persistence, triggers an event to lamda function - infitite scale
+- if staying with NSQ, there are limitations to channels
+- instead of redis use dynamodb for its  persistence, could triggers an event to lamda function - infinite autoscale
 - build a deployment script and k8 pipeline to autoscale each component
 - use a cloud service for hosted redis and sqs for example
  - event architecture to autoscale 
@@ -149,10 +148,5 @@ curl -X POST http://localhost:5555/compute \
   -H "X-Caller-ID: test-caller-1" \
   -d '{"number": "100000000000000000050700000000000000004563"}'
 
- 
-# work log
-
- - worked friday dec 13 from 6 to 7pm on getting server code and docker up 
- - worked saturday dec 14 from 11am to 1pm on queueing and balancing workers
  
  
