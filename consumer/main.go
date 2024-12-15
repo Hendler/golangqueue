@@ -176,90 +176,91 @@ func main() {
 	// Second loop: Monitor NSQ_PRIORITY_TOPIC queue size
 	for {
 		currentQueueSize := workerCoordinator.GetQueueSize()
-		if currentQueueSize < MAX_NSQ_PRIORITY_TOPIC_SIZE {
-			// Create context
-			ctx := context.Background()
-			batch_count := 0
-			available_count := 0
-			for batch_count < BATCH_SIZE {
-				// Select a request ID to process
-				caller_counts, err := workerCoordinator.Rdb.Keys(ctx, "caller_count:*").Result()
-				if err != nil {
-					log.Printf("Failed to get caller counts: %v", err)
-					time.Sleep(time.Second)
-					continue
-				}
-				// get the caller_count for each caller_count
-				for _, caller_count_key := range caller_counts {
-					// Extract caller ID from key (remove "caller_count:" prefix)
-					callerID := strings.TrimPrefix(caller_count_key, "caller_count:")
-
-					// Get count value for this caller
-					count, err := workerCoordinator.Rdb.Get(ctx, caller_count_key).Result()
-					if err != nil {
-						log.Printf("Failed to get count for caller %s: %v", callerID, err)
-						continue
-					}
-					// err = rdb.Del(ctx, caller_count_key).Err()
-					// if err != nil {
-					// 	log.Printf("Failed to delete caller count key %s: %v", caller_count_key, err)
-					// 	continue
-					// }
-					countInt, err := strconv.Atoi(count)
-					if err != nil {
-						log.Printf("Failed to convert count to int: %v", err)
-						continue
-					}
-					if countInt > 0 {
-						available_count += countInt
-					}
-
-					log.Printf("Caller: %s, Count: %s", callerID, count)
-
-					if available_count > 0 {
-						// Get highest scored request ID from caller's priority queue
-						results, err := workerCoordinator.Rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
-						if err != nil {
-							log.Printf("Failed to get request ID from priority queue: %v", err)
-							continue
-						}
-						if len(results) > 0 {
-							requestID := results[0].Member.(string)
-
-							// Publish to priority topic
-							err := workerCoordinator.Producer.Publish(NSQ_PRIORITY_TOPIC, []byte(requestID))
-							if err != nil {
-								log.Printf("Error publishing to priority topic: %v", err)
-								continue // Skip removing if publish failed
-							}
-
-							// Remove the request ID from the sorted set
-							err = workerCoordinator.Rdb.ZRem(ctx, "priority-"+callerID, requestID).Err()
-							if err != nil {
-								log.Printf("Failed to remove request ID from priority queue: %v", err)
-								// You might want to handle this error case depending on your requirements
-							}
-
-							// decrement the caller count
-
-							err = workerCoordinator.Rdb.Decr(ctx, caller_count_key).Err()
-							if err != nil {
-								log.Printf("Failed to decrement caller count: %v", err)
-							}
-
-							batch_count++
-							available_count--
-						}
-					} else {
-						log.Printf("Caller %s has no requests to process, available_count: %d", callerID, available_count)
-					}
-				}
-				if available_count == 0 {
-					break
-				}
-			}
-			time.Sleep(time.Second) // Add delay to prevent tight loop
+		if currentQueueSize >= MAX_NSQ_PRIORITY_TOPIC_SIZE {
+			time.Sleep(time.Second) // Add delay when queue is full
+			continue
 		}
 
+		ctx := context.Background()
+		batch_count := 0
+		available_count := 0
+
+		// Process one batch
+		for batch_count < BATCH_SIZE {
+			// Select a request ID to process
+			caller_counts, err := workerCoordinator.Rdb.Keys(ctx, "caller_count:*").Result()
+			if err != nil {
+				log.Printf("Failed to get caller counts: %v", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			// get the caller_count for each caller_count
+			for _, caller_count_key := range caller_counts {
+				// Extract caller ID from key (remove "caller_count:" prefix)
+				callerID := strings.TrimPrefix(caller_count_key, "caller_count:")
+
+				// Get count value for this caller
+				count, err := workerCoordinator.Rdb.Get(ctx, caller_count_key).Result()
+				if err != nil {
+					log.Printf("Failed to get count for caller %s: %v", callerID, err)
+					continue
+				}
+
+				countInt, err := strconv.Atoi(count)
+				if err != nil {
+					log.Printf("Failed to convert count to int: %v", err)
+					continue
+				}
+				if countInt > 0 {
+					available_count += countInt
+				}
+
+				log.Printf("Caller: %s, Count: %s", callerID, count)
+
+				if available_count > 0 {
+					// Get highest scored request ID from caller's priority queue
+					results, err := workerCoordinator.Rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
+					if err != nil {
+						log.Printf("Failed to get request ID from priority queue: %v", err)
+						continue
+					}
+					if len(results) > 0 {
+						requestID := results[0].Member.(string)
+
+						// Publish to priority topic
+						err := workerCoordinator.Producer.Publish(NSQ_PRIORITY_TOPIC, []byte(requestID))
+						if err != nil {
+							log.Printf("Error publishing to priority topic: %v", err)
+							continue // Skip removing if publish failed
+						}
+
+						// Remove the request ID from the sorted set
+						err = workerCoordinator.Rdb.ZRem(ctx, "priority-"+callerID, requestID).Err()
+						if err != nil {
+							log.Printf("Failed to remove request ID from priority queue: %v", err)
+							// You might want to handle this error case depending on your requirements
+						}
+
+						// decrement the caller count
+
+						err = workerCoordinator.Rdb.Decr(ctx, caller_count_key).Err()
+						if err != nil {
+							log.Printf("Failed to decrement caller count: %v", err)
+						}
+
+						batch_count++
+						available_count--
+					}
+				} else {
+					log.Printf("Caller %s has no requests to process, available_count: %d", callerID, available_count)
+				}
+			}
+			if available_count == 0 {
+				break
+			}
+		}
+
+		// Add delay after each batch, regardless of size
+		time.Sleep(time.Second)
 	}
 }
