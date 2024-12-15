@@ -51,7 +51,7 @@ The definition of fairness could be autoscaled per user, or it could have limite
   - ouput data, output report
 
 # simple improvements
-
+- DRY code
 - put haproxy in front of webserver to load balance - or if on cloud use other load balancer 
 - better configuration management of ports across app
 - use docker swarm to scale nsq , since I can use replicas attribute  
