@@ -36,7 +36,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"os"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -46,6 +46,7 @@ import (
 )
 
 const NSQ_TOPIC string = "factorization_topic"
+const NSQ_SERVER = "nsqd1:4150"
 
 type ComputeRequest struct {
 	Number string `json:"number"`
@@ -63,10 +64,10 @@ type ResultResponse struct {
 func main() {
 	app := fiber.New()
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "trellisredis:6379",
+		Addr: os.Getenv("REDIS_URL"),
 	})
 	config := nsq.NewConfig()
-	producer, err := nsq.NewProducer("nsqd:4150", config)
+	producer, err := nsq.NewProducer(NSQ_SERVER, config)
 	if err != nil {
 		fmt.Printf("Failed to create NSQ producer: %v\n", err)
 		return
@@ -101,51 +102,10 @@ func main() {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to marshal message"})
 		}
 
-		err = producer.Publish(NSQ_TOPIC+"#"+callerID, messageBytes)
+		err = producer.Publish(NSQ_TOPIC, messageBytes)
 
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to queue job"})
-		}
-
-		// store some stats in the background
-		ctx := context.Background()
-		total_count, err := rdb.Incr(ctx, "total_count").Result()
-		if err != nil {
-			err = rdb.Set(ctx, "total_count", 1, 0).Err()
-			if err != nil {
-				log.Printf("Failed to set total_count: %v", err)
-			}
-			total_count = 1
-		}
-		log.Printf("Total count: %d", total_count)
-
-		err = rdb.SAdd(ctx, "caller_ids", callerID).Err()
-		if err != nil {
-			log.Printf("Failed to add caller ID to set: %v", err)
-		}
-		// To get all request IDs:
-		//ids, err := rdb.SMembers(ctx, "request_ids").Result()
-
-		// Your existing logic
-		count, err := rdb.Incr(ctx, "caller_count:"+callerID).Result()
-		if err != nil {
-			err = rdb.Set(ctx, "caller_count:"+callerID, 1, 0).Err()
-			if err != nil {
-				log.Printf("Failed to set caller count: %v", err)
-			}
-			count = 1
-		}
-
-		// Store request data
-		err = rdb.HSet(ctx, "request:"+requestID,
-			"caller_id", callerID,
-			"status", "pending",
-			"number", req.Number,
-			"processed_at_count", count,
-			"results", "",
-		).Err()
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to store request data for requestID: " + requestID})
 		}
 
 		return c.JSON(ComputeResponse{RequestID: requestID})

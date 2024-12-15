@@ -5,142 +5,214 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nsqio/go-nsq"
 	"github.com/redis/go-redis/v9"
 )
 
+const NSQLOOKUPD_STATS_URL = "http://nsqlookupd:4161/nodes"
+const NSQ_SERVER = "nsqd1:4150"
 const NSQ_TOPIC_PREFIX = "factorization_topic"
+const NSQ_PRIORITY_TOPIC string = "factorization_priority_topic"
+const MAX_NSQ_PRIORITY_TOPIC_SIZE = 1000
+const BATCH_SIZE = 100
 
-type Worker struct {
-	rdb       *redis.Client
-	consumers map[string]*nsq.Consumer // map of callerID to consumer
-	mu        sync.RWMutex             // to safely access the consumers map
-	config    *nsq.Config
-}
-
-func NewWorker(rdb *redis.Client) *Worker {
-	return &Worker{
-		rdb:       rdb,
-		consumers: make(map[string]*nsq.Consumer),
-		config:    nsq.NewConfig(),
-	}
-}
-
-// getOrCreateConsumer creates a new consumer for a callerID if it doesn't exist
-func (w *Worker) getOrCreateConsumer(callerID string) (*nsq.Consumer, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if consumer, exists := w.consumers[callerID]; exists {
-		return consumer, nil
-	}
-
-	// Create new consumer for this callerID
-	topic := fmt.Sprintf("%s#%s", NSQ_TOPIC_PREFIX, callerID)
-	consumer, err := nsq.NewConsumer(topic, "channel", w.config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create consumer for callerID %s: %v", callerID, err)
-	}
-
-	// Set the message handler
-	consumer.AddHandler(nsq.HandlerFunc(w.ProcessMessage))
-
-	// Connect to NSQ
-	err = consumer.ConnectToNSQD("localhost:4150")
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to NSQ for callerID %s: %v", callerID, err)
-	}
-
-	w.consumers[callerID] = consumer
-	return consumer, nil
-}
-
-func (w *Worker) Start(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second) // Adjust the interval as needed
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			w.checkAndUpdateConsumers(ctx)
-		}
-	}
-}
-
-func (w *Worker) checkAndUpdateConsumers(ctx context.Context) {
-	// Get all caller IDs from Redis
-	callerIDs, err := w.rdb.SMembers(ctx, "caller_ids").Result()
-	if err != nil {
-		log.Printf("Error getting caller IDs from Redis: %v", err)
-		return
-	}
-
-	// Create consumers for new caller IDs
-	for _, callerID := range callerIDs {
-		_, err := w.getOrCreateConsumer(callerID)
-		if err != nil {
-			log.Printf("Error creating consumer for callerID %s: %v", callerID, err)
-			continue
-		}
-	}
-
-	// Optionally, clean up consumers for caller IDs that no longer exist
-	w.cleanupUnusedConsumers(callerIDs)
-}
-
-func (w *Worker) cleanupUnusedConsumers(activeCallerIDs []string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Create a map for quick lookup
-	activeMap := make(map[string]bool)
-	for _, id := range activeCallerIDs {
-		activeMap[id] = true
-	}
-
-	// Stop and remove consumers that are no longer needed
-	for callerID, consumer := range w.consumers {
-		if !activeMap[callerID] {
-			consumer.Stop()
-			delete(w.consumers, callerID)
-		}
-	}
-}
-
-func (w *Worker) ProcessMessage(message *nsq.Message) error {
-	var msg struct {
-		CallerID  string `json:"caller_id"`
-		RequestID string `json:"request_id"`
-		Number    string `json:"number"`
-	}
-
-	if err := json.Unmarshal(message.Body, &msg); err != nil {
-		return err
-	}
-
-	// Process the message...
-	return nil
-}
+// there is only meant to be one of these coordinators for now, mostly because of redis
 
 func main() {
-	ctx := context.Background()
+	// Initialize NSQ consumer and producer
+	config := nsq.NewConfig()
+	consumer, err := nsq.NewConsumer(NSQ_TOPIC_PREFIX, "channel", config)
+	if err != nil {
+		log.Fatal("Could not create NSQ consumer:", err)
+	}
+
+	producer, err := nsq.NewProducer(NSQ_SERVER, config)
+	if err != nil {
+		log.Fatal("Could not create NSQ producer:", err)
+	}
 
 	// Initialize Redis client
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr: os.Getenv("REDIS_URL"),
 	})
 
-	// Create worker
-	worker := NewWorker(rdb)
+	// IMPORTANT: Add the handler BEFORE connecting to NSQLookupd
+	consumer.AddHandler(nsq.HandlerFunc(func(message *nsq.Message) error {
+		message.Touch()
+		// Parse message into struct
+		type Message struct {
+			CallerID  string `json:"caller_id"`
+			RequestID string `json:"request_id"`
+			Number    string `json:"number"`
+		}
 
-	// Start the worker
-	go worker.Start(ctx)
+		var msg Message
+		err := json.Unmarshal(message.Body, &msg)
+		if err != nil {
+			log.Printf("Error unmarshaling message: %v", err)
+			return err
+		}
 
-	// Wait forever
-	select {}
+		log.Printf("Received message - CallerID: %s, RequestID: %s, Number: %s",
+			msg.CallerID, msg.RequestID, msg.Number)
+		// store some stats in the background
+		ctx := context.Background()
+		// total_count, err := rdb.Incr(ctx, "total_count").Result()
+		// if err != nil {
+		// 	err = rdb.Set(ctx, "total_count", 1, 0).Err()
+		// 	if err != nil {
+		// 		log.Printf("Failed to set total_count: %v", err)
+		// 	}
+		// 	total_count = 1
+		// }
+		// log.Printf("Total count: %d", total_count)
+
+		// err = rdb.SAdd(ctx, "caller_ids", msg.CallerID).Err()
+		// if err != nil {
+		// 	log.Printf("Failed to add caller ID to set: %v", err)
+		// }
+
+		// Your existing logic
+		count, err := rdb.Incr(ctx, "caller_count:"+msg.CallerID).Result()
+		if err != nil {
+			err = rdb.Set(ctx, "caller_count:"+msg.CallerID, 1, 0).Err()
+			if err != nil {
+				log.Printf("Failed to set caller count: %v", err)
+			}
+			count = 1
+		}
+
+		// Add request to caller priority queue with count as score
+		err = rdb.ZAdd(ctx, "priority-"+msg.CallerID, redis.Z{
+			Score:  float64(1 / count), // this is the scoring to preserve LIFO per caller
+			Member: fmt.Sprintf("%s", msg.RequestID),
+		}).Err()
+		if err != nil {
+			log.Printf("Failed to add to caller priority queue: %v", err)
+		}
+		// Store request data, this will be the state used by client, and state for storing results
+		err = rdb.HSet(ctx, "request:"+msg.RequestID,
+			"caller_id", msg.CallerID,
+			"status", "pending",
+			"number", msg.Number,
+			"processed_at_count", count,
+			"results", "",
+		).Err()
+		if err != nil {
+			log.Printf("Failed to store request data in Redis: %v", err)
+			message.Requeue(-1) // Requeue message with default timeout
+			return nil
+		}
+		// Mark message as finished in NSQ
+		message.Finish()
+		return nil
+	}))
+
+	// Connect to NSQLookupd AFTER adding the handler
+	err = consumer.ConnectToNSQLookupd("nsqlookupd:4161")
+	if err != nil {
+		log.Fatal("Could not connect to NSQ lookup:", err)
+	}
+
+	// Second loop: Monitor NSQ_PRIORITY_TOPIC queue size
+	for {
+		// Get queue depth for priority topic
+		resp, err := http.Get(NSQLOOKUPD_STATS_URL)
+		if err != nil {
+			log.Printf("Error getting NSQ stats: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		defer resp.Body.Close()
+
+		var nsqStats struct {
+			Topics []struct {
+				TopicName string `json:"topic_name"`
+				Depth     int64  `json:"depth"`
+			} `json:"topics"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&nsqStats); err != nil {
+			log.Printf("Error decoding NSQ stats: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		var currentQueueSize int64
+		for _, topic := range nsqStats.Topics {
+			if topic.TopicName == NSQ_PRIORITY_TOPIC {
+				currentQueueSize = topic.Depth
+				break
+			}
+		}
+
+		if currentQueueSize < MAX_NSQ_PRIORITY_TOPIC_SIZE {
+			// Create context
+			ctx := context.Background()
+			batch_count := 0
+			for batch_count < BATCH_SIZE {
+				// Select a request ID to process
+				caller_counts, err := rdb.Keys(ctx, "caller_count:*").Result()
+				if err != nil {
+					log.Printf("Failed to get caller counts: %v", err)
+					time.Sleep(time.Second)
+					continue
+				}
+				// get the caller_count for each caller_count
+				for _, caller_count := range caller_counts {
+					// Extract caller ID from key (remove "caller_count:" prefix)
+					callerID := strings.TrimPrefix(caller_count, "caller_count:")
+
+					// Get count value for this caller
+					count, err := rdb.Get(ctx, caller_count).Result()
+
+					if err != nil {
+						log.Printf("Failed to get count for caller %s: %v", callerID, err)
+						continue
+					}
+					countInt, err := strconv.Atoi(count)
+					if err != nil {
+						log.Printf("Failed to convert count to int: %v", err)
+						continue
+					}
+					log.Printf("Caller: %s, Count: %s", callerID, count)
+					if countInt > 0 {
+						// Get highest scored request ID from caller's priority queue
+						results, err := rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
+						if err != nil {
+							log.Printf("Failed to get request ID from priority queue: %v", err)
+							continue
+						}
+						if len(results) > 0 {
+							requestID := results[0].Member.(string)
+
+							// Publish to priority topic
+							err := producer.Publish(NSQ_PRIORITY_TOPIC, []byte(requestID))
+							if err != nil {
+								log.Printf("Error publishing to priority topic: %v", err)
+								continue // Skip removing if publish failed
+							}
+
+							// Remove the request ID from the sorted set
+							err = rdb.ZRem(ctx, "priority-"+callerID, requestID).Err()
+							if err != nil {
+								log.Printf("Failed to remove request ID from priority queue: %v", err)
+								// You might want to handle this error case depending on your requirements
+							}
+
+							batch_count++
+						}
+					}
+				}
+			}
+		}
+
+		time.Sleep(time.Second) // Add delay to prevent tight loop
+	}
 }

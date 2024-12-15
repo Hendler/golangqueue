@@ -27,10 +27,10 @@ The definition of fairness could be autoscaled per user, or it could have limite
  
 ## ingestion steps
 
-1. NSQ store jobs in queue immediately, in a TOPIC#callerID format
+1. NSQ store jobs in queue immediately 
 2. at the same time redis counts are incremented and a set of callerIDs is stored, indicating to each worker which channels it should 
-3. an nsq consumers are instatiated, one per callerID processes the jobs, decides what channel to subscribe to based on Redis stats
-4.  when job is done store results in redis, a new results queue, which flushes every 5 seconds to disk, and we assume that is ok for persistence for now
+3. an intermediate coordinator reads the queue and determines a priority of the request id, stores iit in redis. It then pops the top priority and adds it to the worker/priority queue. This can also be used to autoscale the workers.
+4.  a worker reads from the priority queue, and when job is done store results in redis, a new results queue, which flushes every 5 seconds to disk, and we assume that is ok for persistence for now
 
 
 

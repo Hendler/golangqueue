@@ -10,7 +10,7 @@ services:
     depends_on:
       - trellisredis
     environment:
-      - REDIS_URL=redis:6379
+      - REDIS_URL=trellisredis:6379
     networks:
       - trellis
   consumer:
@@ -20,7 +20,17 @@ services:
     depends_on:
       - trellisredis
     environment:
-      - REDIS_URL=redis:6379
+      - REDIS_URL=trellisredis:6379
+    networks:
+      - trellis
+  worker:
+    build:
+      context: .
+      dockerfile: docker/WorkerDockerfile
+    depends_on:
+      - trellisredis
+    environment:
+      - REDIS_URL=trellisredis:6379
     networks:
       - trellis
 
@@ -30,9 +40,11 @@ services:
     restart: always
     ports:
       - '6381:6379'
+   #  persist to disk every 2 seconds
     command: >
       redis-server 
-      --save 20 1 
+   
+      --save 2 1 
       --appendonly yes 
       --appendfilename "appendonly.aof"
       --dir /data
