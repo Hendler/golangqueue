@@ -194,6 +194,10 @@ func main() {
 				time.Sleep(time.Second)
 				continue
 			}
+
+			// Check if there are any callers with counts > 0
+			found_work := false
+
 			// get the caller_count for each caller_count
 			for _, caller_count_key := range caller_counts {
 				// Extract caller ID from key (remove "caller_count:" prefix)
@@ -212,6 +216,7 @@ func main() {
 					continue
 				}
 				if countInt > 0 {
+					found_work = true
 					available_count += countInt
 				}
 
@@ -255,6 +260,12 @@ func main() {
 					log.Printf("Caller %s has no requests to process, available_count: %d", callerID, available_count)
 				}
 			}
+
+			// Break out if no work was found
+			if !found_work {
+				break
+			}
+
 			if available_count == 0 {
 				break
 			}
