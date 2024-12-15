@@ -35,12 +35,10 @@ The definition of fairness could be autoscaled per user, or it could have limite
 
 
 # TODO
-
- - parse large string to big number
- - safer input
- - worker service that autoscales to handle nsq queue size
  - make worker service in docker
- - balanced load for reading
+ - parse large string to big number
+ - fix nested logic that's broken
+
  
  ## benchmark
   - generate random large numbers

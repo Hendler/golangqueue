@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,26 +23,30 @@ const MAX_NSQ_PRIORITY_TOPIC_SIZE = 1000
 const BATCH_SIZE = 100
 
 // there is only meant to be one of these coordinators for now, mostly because of redis
+type WorkerCoordinator struct {
+	Consumer *nsq.Consumer
+	Producer *nsq.Producer
+	Rdb      *redis.Client
+}
 
-func main() {
-	// Initialize NSQ consumer and producer
+func NewWorkerCoordinator() (*WorkerCoordinator, error) {
 	config := nsq.NewConfig()
+
 	consumer, err := nsq.NewConsumer(NSQ_TOPIC_PREFIX, "channel", config)
 	if err != nil {
-		log.Fatal("Could not create NSQ consumer:", err)
+		return nil, fmt.Errorf("could not create NSQ consumer: %w", err)
 	}
 
 	producer, err := nsq.NewProducer(NSQ_SERVER, config)
 	if err != nil {
-		log.Fatal("Could not create NSQ producer:", err)
+		consumer.Stop()
+		return nil, fmt.Errorf("could not create NSQ producer: %w", err)
 	}
 
-	// Initialize Redis client
 	rdb := redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_URL"),
 	})
 
-	// IMPORTANT: Add the handler BEFORE connecting to NSQLookupd
 	consumer.AddHandler(nsq.HandlerFunc(func(message *nsq.Message) error {
 		message.Touch()
 		// Parse message into struct
@@ -62,22 +67,7 @@ func main() {
 			msg.CallerID, msg.RequestID, msg.Number)
 		// store some stats in the background
 		ctx := context.Background()
-		// total_count, err := rdb.Incr(ctx, "total_count").Result()
-		// if err != nil {
-		// 	err = rdb.Set(ctx, "total_count", 1, 0).Err()
-		// 	if err != nil {
-		// 		log.Printf("Failed to set total_count: %v", err)
-		// 	}
-		// 	total_count = 1
-		// }
-		// log.Printf("Total count: %d", total_count)
 
-		// err = rdb.SAdd(ctx, "caller_ids", msg.CallerID).Err()
-		// if err != nil {
-		// 	log.Printf("Failed to add caller ID to set: %v", err)
-		// }
-
-		// Your existing logic
 		count, err := rdb.Incr(ctx, "caller_count:"+msg.CallerID).Result()
 		if err != nil {
 			err = rdb.Set(ctx, "caller_count:"+msg.CallerID, 1, 0).Err()
@@ -129,39 +119,63 @@ func main() {
 	// You might also want to add a stats handler to monitor the consumer
 	consumer.SetLogger(log.New(os.Stdout, "", log.LstdFlags), nsq.LogLevelDebug)
 
+	return &WorkerCoordinator{
+		Consumer: consumer,
+		Producer: producer,
+		Rdb:      rdb,
+	}, nil
+}
+
+// GetQueueSize queries the NSQ lookup daemon's stats endpoint to get the current size
+// of the priority queue topic. It makes an HTTP request to the NSQLookupd stats URL
+// and parses the response to find the depth (number of messages) of the priority topic.
+//
+// The function returns:
+// - The number of messages currently in the priority topic queue
+// - 0 if there are any errors or if the priority topic is not found
+//
+// This is used to implement backpressure - ensuring the priority queue doesn't grow
+// too large by checking its size before adding more messages.
+func (wc *WorkerCoordinator) GetQueueSize() int64 {
+	resp, err := http.Get(NSQLOOKUPD_STATS_URL)
+	if err != nil {
+		log.Printf("Error getting NSQ stats: %v", err)
+		return 0
+	}
+	defer resp.Body.Close()
+
+	var nsqStats struct {
+		Topics []struct {
+			TopicName string `json:"topic_name"`
+			Depth     int64  `json:"depth"`
+		} `json:"topics"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&nsqStats); err != nil {
+		log.Printf("Error decoding NSQ stats: %v", err)
+		return 0
+	}
+
+	for _, topic := range nsqStats.Topics {
+		if topic.TopicName == NSQ_PRIORITY_TOPIC {
+			log.Printf("Current queue size for topic %s: %d", NSQ_PRIORITY_TOPIC, topic.Depth)
+			return topic.Depth
+		}
+	}
+
+	return 0
+}
+
+func main() {
+	// Initialize NSQ consumer and producer
+	workerCoordinator, err := NewWorkerCoordinator()
+	if err != nil {
+		log.Fatal("Could not create worker coordinator:", err)
+	}
+
 	// Second loop: Monitor NSQ_PRIORITY_TOPIC queue size
 	for {
-		// Get queue depth for priority topic
-		resp, err := http.Get(NSQLOOKUPD_STATS_URL)
-		if err != nil {
-			log.Printf("Error getting NSQ stats: %v", err)
-			time.Sleep(time.Second)
-			continue
-		}
-		defer resp.Body.Close()
-
-		var nsqStats struct {
-			Topics []struct {
-				TopicName string `json:"topic_name"`
-				Depth     int64  `json:"depth"`
-			} `json:"topics"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&nsqStats); err != nil {
-			log.Printf("Error decoding NSQ stats: %v", err)
-			time.Sleep(time.Second)
-			continue
-		}
-
-		var currentQueueSize int64
-		for _, topic := range nsqStats.Topics {
-			if topic.TopicName == NSQ_PRIORITY_TOPIC {
-				currentQueueSize = topic.Depth
-				break
-			}
-		}
-		log.Printf("Current queue size for topic %s: %d", NSQ_PRIORITY_TOPIC, currentQueueSize)
-
+		currentQueueSize := workerCoordinator.GetQueueSize()
 		if currentQueueSize < MAX_NSQ_PRIORITY_TOPIC_SIZE {
 			// Create context
 			ctx := context.Background()
@@ -169,7 +183,7 @@ func main() {
 			available_count := 0
 			for batch_count < BATCH_SIZE {
 				// Select a request ID to process
-				caller_counts, err := rdb.Keys(ctx, "caller_count:*").Result()
+				caller_counts, err := workerCoordinator.Rdb.Keys(ctx, "caller_count:*").Result()
 				if err != nil {
 					log.Printf("Failed to get caller counts: %v", err)
 					time.Sleep(time.Second)
@@ -181,7 +195,7 @@ func main() {
 					callerID := strings.TrimPrefix(caller_count_key, "caller_count:")
 
 					// Get count value for this caller
-					count, err := rdb.Get(ctx, caller_count_key).Result()
+					count, err := workerCoordinator.Rdb.Get(ctx, caller_count_key).Result()
 					if err != nil {
 						log.Printf("Failed to get count for caller %s: %v", callerID, err)
 						continue
@@ -204,7 +218,7 @@ func main() {
 
 					if available_count > 0 {
 						// Get highest scored request ID from caller's priority queue
-						results, err := rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
+						results, err := workerCoordinator.Rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
 						if err != nil {
 							log.Printf("Failed to get request ID from priority queue: %v", err)
 							continue
@@ -213,14 +227,14 @@ func main() {
 							requestID := results[0].Member.(string)
 
 							// Publish to priority topic
-							err := producer.Publish(NSQ_PRIORITY_TOPIC, []byte(requestID))
+							err := workerCoordinator.Producer.Publish(NSQ_PRIORITY_TOPIC, []byte(requestID))
 							if err != nil {
 								log.Printf("Error publishing to priority topic: %v", err)
 								continue // Skip removing if publish failed
 							}
 
 							// Remove the request ID from the sorted set
-							err = rdb.ZRem(ctx, "priority-"+callerID, requestID).Err()
+							err = workerCoordinator.Rdb.ZRem(ctx, "priority-"+callerID, requestID).Err()
 							if err != nil {
 								log.Printf("Failed to remove request ID from priority queue: %v", err)
 								// You might want to handle this error case depending on your requirements
@@ -228,7 +242,7 @@ func main() {
 
 							// decrement the caller count
 
-							err = rdb.Decr(ctx, caller_count_key).Err()
+							err = workerCoordinator.Rdb.Decr(ctx, caller_count_key).Err()
 							if err != nil {
 								log.Printf("Failed to decrement caller count: %v", err)
 							}
