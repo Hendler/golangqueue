@@ -13,16 +13,59 @@ assumes you have docker and go installed
      go build -o ./benchmark-run ./benchmark/main.go
      ./benchmark-run -requests 20000 -clients 10 -concurrency 50 
 
+
+ example bench output
+
+    Benchmark Results:
+    Total Duration: 9.879257427s
+    Successful Requests: 20000
+    Failed Requests: 0
+    Average Request Time: 24.254079ms
+    Maximum Request Time: 168.253088ms
+    Minimum Request Time: 2.491334ms
+    Requests/second: 2024.44
+
+    Checking computation results...
+
+    Status Check (elapsed time: 138ns):
+    - Completed: 70
+    - Pending: 7307
+    - Not Found/Failed: 12623
+
+    Status Check (elapsed time: 1m42.773404407s):
+    - Completed: 1423
+    - Pending: 18577
+    - Not Found/Failed: 0
+    ...
+
+You can also see that round robin is working
+
+
+    worker-1    | 2024/12/15 10:58:16 Processing request - CallerID: client-599137, Number: 37953193904633822419
+    worker-1    | 2024/12/15 10:58:16 Processing request - CallerID: client-937365, Number: 89416368970745194523
+    worker-1    | 2024/12/15 10:58:16 Processing request - CallerID: client-599137, Number: 8465375091434688124
+    worker-1    | 2024/12/15 10:58:16 Processing request - CallerID: client-590854, Number: 32683341914465869449
+    worker-1    | 2024/12/15 10:58:16 Processing request - CallerID: client-142032, Number: 50067340403705161807
+    worker-1    | 2024/12/15 10:58:17 Processing request - CallerID: client-142032, Number: 87180621580426014420
+    worker-1    | 2024/12/15 10:58:17 Processing request - CallerID: client-714009, Number: 24297971420810935712
+    worker-1    | 2024/12/15 10:58:17 Processing request - CallerID: client-869768, Number: 31709446175617470195
+    worker-1    | 2024/12/15 10:58:17 Processing request - CallerID: client-851991, Number: 28470785117835958864
+    worker-1    | 2024/12/15 10:58:17 Processing request - CallerID: client-714009, Number: 23845271037315433349
+
+
+
 ## ISSUES
 
- - FIXED, was using GMP, now using sympy the workers will often crash with out of memory errors data is safe.
+ - ~~FIXED, was using GMP, now using sympy the workers will often crash with out of memory errors data is safe.~~
  - you may need to stop and start docker so that NSQ topics get created. 
  
  ## cleanup to restart benches
 
     docker compose down 
     rm -rf volumes/redis/*
-    go to http://localhost:4171/nodes to empty queues (and consuming channels)
+    go to http://localhost:4171/nodes to empty queues (and empty consuming channels)
+
+
 
 
 # design decisions
