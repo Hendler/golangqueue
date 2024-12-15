@@ -263,15 +263,13 @@ func main() {
 
 			// Break out if no work was found
 			if !found_work {
-				break
+				time.Sleep(time.Second)
 			}
 
 			if available_count == 0 {
-				break
+				time.Sleep(time.Second)
 			}
 		}
 
-		// Add delay after each batch, regardless of size
-		time.Sleep(time.Second)
 	}
 }
