@@ -47,6 +47,7 @@ import (
 
 const NSQ_TOPIC string = "factorization_topic"
 const NSQ_SERVER = "nsqd1:4150"
+const APP_PORT = ":5555"
 
 type ComputeRequest struct {
 	Number string `json:"number"`
@@ -160,7 +161,6 @@ func main() {
 		return c.Status(500).JSON(fiber.Map{"error": "Invalid request status"})
 	})
 
-	port := ":5555"
-	fmt.Printf("Starting server on port %s\n", port)
-	app.Listen(port)
+	fmt.Printf("Starting server on port %s\n", APP_PORT)
+	app.Listen(APP_PORT)
 }

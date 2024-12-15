@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -91,7 +90,7 @@ func main() {
 		// Add request to caller priority queue with count as score
 		err = rdb.ZAdd(ctx, "priority-"+msg.CallerID, redis.Z{
 			Score:  float64(1 / count), // this is the scoring to preserve LIFO per caller
-			Member: fmt.Sprintf("%s", msg.RequestID),
+			Member: msg.RequestID,
 		}).Err()
 		if err != nil {
 			log.Printf("Failed to add to caller priority queue: %v", err)
@@ -114,11 +113,21 @@ func main() {
 		return nil
 	}))
 
+	// After creating the consumer
+	log.Printf("Consumer created for topic: %s", NSQ_TOPIC_PREFIX)
+
+	// After adding the handler
+	log.Printf("Handler registered for topic: %s", NSQ_TOPIC_PREFIX)
+
 	// Connect to NSQLookupd AFTER adding the handler
 	err = consumer.ConnectToNSQLookupd("nsqlookupd:4161")
 	if err != nil {
 		log.Fatal("Could not connect to NSQ lookup:", err)
 	}
+	log.Printf("Successfully connected to NSQLookupd")
+
+	// You might also want to add a stats handler to monitor the consumer
+	consumer.SetLogger(log.New(os.Stdout, "", log.LstdFlags), nsq.LogLevelDebug)
 
 	// Second loop: Monitor NSQ_PRIORITY_TOPIC queue size
 	for {
@@ -151,11 +160,13 @@ func main() {
 				break
 			}
 		}
+		log.Printf("Current queue size for topic %s: %d", NSQ_PRIORITY_TOPIC, currentQueueSize)
 
 		if currentQueueSize < MAX_NSQ_PRIORITY_TOPIC_SIZE {
 			// Create context
 			ctx := context.Background()
 			batch_count := 0
+			available_count := 0
 			for batch_count < BATCH_SIZE {
 				// Select a request ID to process
 				caller_counts, err := rdb.Keys(ctx, "caller_count:*").Result()
@@ -165,23 +176,32 @@ func main() {
 					continue
 				}
 				// get the caller_count for each caller_count
-				for _, caller_count := range caller_counts {
+				for _, caller_count_key := range caller_counts {
 					// Extract caller ID from key (remove "caller_count:" prefix)
-					callerID := strings.TrimPrefix(caller_count, "caller_count:")
+					callerID := strings.TrimPrefix(caller_count_key, "caller_count:")
 
 					// Get count value for this caller
-					count, err := rdb.Get(ctx, caller_count).Result()
-
+					count, err := rdb.Get(ctx, caller_count_key).Result()
 					if err != nil {
 						log.Printf("Failed to get count for caller %s: %v", callerID, err)
 						continue
 					}
+					// err = rdb.Del(ctx, caller_count_key).Err()
+					// if err != nil {
+					// 	log.Printf("Failed to delete caller count key %s: %v", caller_count_key, err)
+					// 	continue
+					// }
 					countInt, err := strconv.Atoi(count)
 					if err != nil {
 						log.Printf("Failed to convert count to int: %v", err)
 						continue
 					}
+					if countInt > 1 {
+						available_count += countInt - 1
+					}
+
 					log.Printf("Caller: %s, Count: %s", callerID, count)
+
 					if countInt > 0 {
 						// Get highest scored request ID from caller's priority queue
 						results, err := rdb.ZRevRangeWithScores(ctx, "priority-"+callerID, 0, 0).Result()
@@ -206,13 +226,23 @@ func main() {
 								// You might want to handle this error case depending on your requirements
 							}
 
+							// decrement the caller count
+
+							err = rdb.Decr(ctx, caller_count_key).Err()
+							if err != nil {
+								log.Printf("Failed to decrement caller count: %v", err)
+							}
+
 							batch_count++
 						}
 					}
 				}
+				if available_count == 0 {
+					break
+				}
 			}
+			time.Sleep(time.Second) // Add delay to prevent tight loop
 		}
 
-		time.Sleep(time.Second) // Add delay to prevent tight loop
 	}
 }

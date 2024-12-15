@@ -78,7 +78,7 @@ After
 
 Then you can see that nsq is up at http://localhost:4171/ and see nodes at http://localhost:4171/nodes to verify it's up.
 
-to check redis is up and working, you can hit 
+BROKEN - to check redis is up and working, you can hit 
 http://localhost:8004/
 
 to check webserver is up and working, you can hit 
