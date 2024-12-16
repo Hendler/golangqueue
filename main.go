@@ -137,7 +137,7 @@ func main() {
 			return c.JSON(ResultResponse{
 				Status: status,
 				Number: number,
-				Result: results,
+				Result: "",
 			})
 		}
 
@@ -159,7 +159,7 @@ func main() {
 
 			return c.JSON(ResultResponse{
 				Status: "complete",
-				Result: result,
+				Result: results,
 			})
 		}
 

@@ -10,8 +10,9 @@ assumes you have docker and go installed
  
 ##  benchmarks
 
-     go build -o ./benchmark-run ./benchmark/main.go
-     ./benchmark-run -requests 20000 -clients 10 -concurrency 50 
+    go mod download
+    go build -o ./benchmark-run ./benchmark/main.go
+    ./benchmark-run -requests 20000 -clients 10 -concurrency 50 
 
 
  example bench output. Note that it first is queueing the work, then monitoring progress for every client.
