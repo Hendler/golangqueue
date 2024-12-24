@@ -1,4 +1,7 @@
-# Setup
+# Three Stage 
+
+Contrived example of using NSQ, Redis, and Go to build a distributed system for 
+fair execution between multiple clients of prime factorization.
 
 ## dev environment
 
@@ -65,8 +68,6 @@ You can also see that round robin is working
     docker compose down 
     rm -rf volumes/redis/*
     go to http://localhost:4171/nodes to empty queues (and empty consuming channels)
-
-
 
 
 # design decisions
